@@ -246,7 +246,7 @@ class TextDecoder(nn.Module):
             x @ torch.transpose(self.token_embedding.weight.to(x.dtype), 0, 1)
         ).float()
 
-        return logits
+        return logits, x 
 
 
 class Whisper(nn.Module):
