@@ -7,6 +7,56 @@
 
 Whisper is a general-purpose speech recognition model. It is trained on a large dataset of diverse audio and is also a multitasking model that can perform multilingual speech recognition, speech translation, and language identification.
 
+# Whisper Fork Modifications
+
+## Overview
+
+This fork extends the original Whisper implementation to capture and return **hidden states** during transcription and decoding processes. These modifications allow access to the internal representations of the model, which can be useful for downstream tasks, analysis, or research purposes.
+
+## Key Modifications
+
+### 1. Hidden State Extraction in Transcription (`transcribe.py`)
+
+- **Added frame-level hidden state tracking**: The transcription function now collects hidden states for each audio frame during processing
+- **New return fields**: The transcription result now includes:
+  - `frames_last_hidden_states`: Last hidden states from each audio frame
+  - `frames_tokens`: Tokens corresponding to each frame
+
+### 2. Enhanced Decoding Results (`decoding.py`)
+
+- **Extended DecodingResult dataclass**: Added `last_hidden_state` field to store hidden states
+- **Modified inference pipeline**: 
+  - Updated `PyTorchInference.logits()` to return both logits and hidden states
+  - Enhanced `_main_loop()` to collect hidden states at each decoding step
+  - Added proper reshaping logic for beam search scenarios
+- **Beam search compatibility**: Hidden states are properly tracked and selected for the chosen beam in beam search decoding
+
+### 3. Model Output Changes (`model.py`)
+
+- **TextDecoder modification**: The decoder now returns both logits and the final hidden state (`x`) instead of just logits
+- **Backward compatibility maintained**: The main model interfaces remain the same, with additional hidden state information available
+
+## Use Cases
+
+These modifications enable:
+
+1. **Feature extraction**: Access to intermediate representations for downstream tasks
+2. **Model analysis**: Study internal model behavior during transcription
+3. **Research applications**: Use hidden states for transfer learning or representation analysis
+4. **Custom post-processing**: Build additional layers or processing on top of Whisper's representations
+
+## Installation
+
+```bash
+pip install git+https://github.com/helemanc/whisper.git
+```
+
+Or, to force the re-install
+
+```bash
+pip install --force-reinstall git+https://github.com/helemanc/whisper.git
+```
+
 
 ## Approach
 
