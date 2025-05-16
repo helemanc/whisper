@@ -46,6 +46,7 @@ def transcribe(
     no_speech_threshold: Optional[float] = 0.6,
     condition_on_previous_text: bool = True,
     initial_prompt: Optional[str] = None,
+    carry_initial_prompt: bool = False,
     word_timestamps: bool = False,
     prepend_punctuations: str = "\"'“¿([{-",
     append_punctuations: str = "\"'.。,，!！?？:：”)]}、",
@@ -102,6 +103,11 @@ def transcribe(
         "prompt-engineer" a context for transcription, e.g. custom vocabularies or proper nouns
         to make it more likely to predict those word correctly.
 
+    carry_initial_prompt: bool
+        If carry_initial_prompt is True, `initial_prompt` is prepended to the prompt of each internal
+        `decode()` call. If there is not enough context space at the start of the prompt, it is
+        left-sliced to make space.
+
     decode_options: dict
         Keyword arguments to construct `DecodingOptions` instances
 
@@ -116,8 +122,9 @@ def transcribe(
     Returns
     -------
     A dictionary containing the resulting text ("text") and segment-level details ("segments"), and
-    the spoken language ("language"), which is detected when `decode_options["language"]` is None.
+    the spoken language ("language"), which is detected when `dec ode_options["language"]` is None.
     """
+        
     dtype = torch.float16 if decode_options.get("fp16", True) else torch.float32
     if model.device == torch.device("cpu"):
         if torch.cuda.is_available():
@@ -277,7 +284,13 @@ def transcribe(
             segment_duration = segment_size * HOP_LENGTH / SAMPLE_RATE
             mel_segment = pad_or_trim(mel_segment, N_FRAMES).to(model.device).to(dtype)
 
-            decode_options["prompt"] = all_tokens[prompt_reset_since:]
+            if carry_initial_prompt:
+                nignored = max(len(initial_prompt_tokens), prompt_reset_since)
+                remaining_prompt = all_tokens[nignored:][-remaining_prompt_length:]
+                decode_options["prompt"] = initial_prompt_tokens + remaining_prompt
+            else:
+                decode_options["prompt"] = all_tokens[prompt_reset_since:]
+                
             result: DecodingResult = decode_with_fallback(mel_segment)
             frames_hidden_states.append(result.last_hidden_state) #TODO
             frames_tokens.append(result.tokens) #TODO
@@ -535,6 +548,7 @@ def cli():
 
     parser.add_argument("--suppress_tokens", type=str, default="-1", help="comma-separated list of token ids to suppress during sampling; '-1' will suppress most special characters except common punctuations")
     parser.add_argument("--initial_prompt", type=str, default=None, help="optional text to provide as a prompt for the first window.")
+    parser.add_argument("--carry_initial_prompt", type=str2bool, default=False, help="if True, prepend initial_prompt to every internal decode() call. May reduce the effectiveness of condition_on_previous_text")
     parser.add_argument("--condition_on_previous_text", type=str2bool, default=True, help="if True, provide the previous output of the model as a prompt for the next window; disabling may make the text inconsistent across windows, but the model becomes less prone to getting stuck in a failure loop")
     parser.add_argument("--fp16", type=str2bool, default=True, help="whether to perform inference in fp16; True by default")
 
