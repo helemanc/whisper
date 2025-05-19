@@ -122,9 +122,8 @@ def transcribe(
     Returns
     -------
     A dictionary containing the resulting text ("text") and segment-level details ("segments"), and
-    the spoken language ("language"), which is detected when `dec ode_options["language"]` is None.
+    the spoken language ("language"), which is detected when `decode_options["language"]` is None.
     """
-        
     dtype = torch.float16 if decode_options.get("fp16", True) else torch.float32
     if model.device == torch.device("cpu"):
         if torch.cuda.is_available():
@@ -215,6 +214,8 @@ def transcribe(
             if (
                 no_speech_threshold is not None
                 and decode_result.no_speech_prob > no_speech_threshold
+                and logprob_threshold is not None
+                and decode_result.avg_logprob < logprob_threshold
             ):
                 needs_fallback = False  # silence
             if not needs_fallback:
@@ -234,9 +235,11 @@ def transcribe(
     all_segments = []
     prompt_reset_since = 0
 
+    remaining_prompt_length = model.dims.n_text_ctx // 2 - 1
     if initial_prompt is not None:
         initial_prompt_tokens = tokenizer.encode(" " + initial_prompt.strip())
         all_tokens.extend(initial_prompt_tokens)
+        remaining_prompt_length -= len(initial_prompt_tokens)
     else:
         initial_prompt_tokens = []
 
@@ -290,10 +293,10 @@ def transcribe(
                 decode_options["prompt"] = initial_prompt_tokens + remaining_prompt
             else:
                 decode_options["prompt"] = all_tokens[prompt_reset_since:]
-                
+
             result: DecodingResult = decode_with_fallback(mel_segment)
-            frames_hidden_states.append(result.last_hidden_state) #TODO
-            frames_tokens.append(result.tokens) #TODO
+            frames_hidden_states.append(result.last_hidden_state) 
+            frames_tokens.append(result.tokens) 
             tokens = torch.tensor(result.tokens)
 
             if no_speech_threshold is not None:
@@ -549,6 +552,7 @@ def cli():
     parser.add_argument("--suppress_tokens", type=str, default="-1", help="comma-separated list of token ids to suppress during sampling; '-1' will suppress most special characters except common punctuations")
     parser.add_argument("--initial_prompt", type=str, default=None, help="optional text to provide as a prompt for the first window.")
     parser.add_argument("--carry_initial_prompt", type=str2bool, default=False, help="if True, prepend initial_prompt to every internal decode() call. May reduce the effectiveness of condition_on_previous_text")
+
     parser.add_argument("--condition_on_previous_text", type=str2bool, default=True, help="if True, provide the previous output of the model as a prompt for the next window; disabling may make the text inconsistent across windows, but the model becomes less prone to getting stuck in a failure loop")
     parser.add_argument("--fp16", type=str2bool, default=True, help="whether to perform inference in fp16; True by default")
 
