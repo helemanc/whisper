@@ -260,8 +260,10 @@ def transcribe(
             "no_speech_prob": result.no_speech_prob,
         }
 
+    frames_last_hidden_states = []
     frames_hidden_states = []
     frames_tokens = []
+    frames_audio_features = []
     # show the progress bar when verbose is False (if True, transcribed text will be printed)
     with tqdm.tqdm(
         total=content_frames, unit="frames", disable=verbose is not False
@@ -295,9 +297,12 @@ def transcribe(
                 decode_options["prompt"] = all_tokens[prompt_reset_since:]
 
             result: DecodingResult = decode_with_fallback(mel_segment)
-            frames_hidden_states.append(result.last_hidden_state) 
+            frames_last_hidden_states.append(result.last_hidden_states) 
+            frames_hidden_states.append(result.hidden_states)
             frames_tokens.append(result.tokens) 
+            frames_audio_features.append(result.audio_features)
             tokens = torch.tensor(result.tokens)
+            
 
             if no_speech_threshold is not None:
                 # no voice activity check
@@ -515,8 +520,10 @@ def transcribe(
         text=tokenizer.decode(all_tokens[len(initial_prompt_tokens) :]),
         segments=all_segments,
         language=language,
-        frames_last_hidden_states=frames_hidden_states,
-        frames_tokens=frames_tokens
+        frames_last_hidden_states=frames_last_hidden_states,
+        frames_hidden_states=frames_hidden_states,
+        frames_tokens=frames_tokens,
+        frames_audio_features=frames_audio_features,
     )
 
 
