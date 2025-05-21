@@ -125,7 +125,8 @@ class DecodingResult:
     no_speech_prob: float = np.nan
     temperature: float = np.nan
     compression_ratio: float = np.nan
-    last_hidden_state: Optional[Tensor] = None #TODO
+    last_hidden_states: Optional[Tensor] = None #TODO
+    hidden_states: Optional[Tensor] = None #TODO
 
 
 class Inference:
@@ -684,10 +685,12 @@ class DecodingTask:
         no_speech_probs = [np.nan] * n_batch
 
         # Store only the last hidden state from each beam
+        all_final_hidden_states = []
         all_hidden_states = []
         try:
             for i in range(self.sample_len):
-                logits, hidden_states = self.inference.logits(tokens, audio_features)  # TODO
+                logits, final_hidden_states, hidden_states  = self.inference.logits(tokens, audio_features)  # TODO
+                all_final_hidden_states.append(final_hidden_states)
                 all_hidden_states.append(hidden_states)
                 
                 if (
@@ -711,7 +714,7 @@ class DecodingTask:
         finally:
             self.inference.cleanup_caching()
 
-        return tokens, sum_logprobs, no_speech_probs, all_hidden_states #TODO
+        return tokens, sum_logprobs, no_speech_probs, all_final_hidden_states, all_hidden_states #TODO
 
     @torch.no_grad()
     def run(self, mel: Tensor) -> List[DecodingResult]:
@@ -738,7 +741,7 @@ class DecodingTask:
         tokens = tokens.repeat_interleave(self.n_group, dim=0).to(audio_features.device)
 
         # call the main sampling loop
-        tokens, sum_logprobs, no_speech_probs, all_hidden_states = self._main_loop(audio_features, tokens) # TODO ADD 
+        tokens, sum_logprobs, no_speech_probs, all_final_hidden_states, all_hidden_states = self._main_loop(audio_features, tokens) # TODO ADD 
 
         # reshape the tensors to have (n_audio, n_group) as the first two dimensions
         audio_features = audio_features[:: self.n_group]
@@ -749,14 +752,27 @@ class DecodingTask:
         sum_logprobs = sum_logprobs.reshape(n_audio, self.n_group)
 
         # <<<< RESHAPE HIDDEN STATES HERE >>>>
-        # Each element in all_hidden_states has shape [n_audio * n_group, seq_len, hidden_dim]
+        # Each element in all_final_hidden_states has shape [n_audio * n_group, seq_len, hidden_dim]
         # We need to reshape each to [n_audio, n_group, seq_len, hidden_dim]
+        reshaped_final_hidden_states = []
+        if all_final_hidden_states:
+            for step_hidden_states in all_final_hidden_states:
+                # Reshape each step: [n_audio * n_group, seq_len, hidden_dim] -> [n_audio, n_group, seq_len, hidden_dim]
+                reshaped_step = step_hidden_states.reshape(n_audio, self.n_group, *step_hidden_states.shape[1:])
+                reshaped_final_hidden_states.append(reshaped_step)
+        
         reshaped_hidden_states = []
         if all_hidden_states:
             for step_hidden_states in all_hidden_states:
-                # Reshape each step: [n_audio * n_group, seq_len, hidden_dim] -> [n_audio, n_group, seq_len, hidden_dim]
-                reshaped_step = step_hidden_states.reshape(n_audio, self.n_group, *step_hidden_states.shape[1:])
-                reshaped_hidden_states.append(reshaped_step)
+                reshaped_step_hidden_states = []
+                for hidden_state in step_hidden_states:
+                    # Reshape each step: [n_audio * n_group, seq_len, hidden_dim] -> [n_audio, n_group, seq_len, hidden_dim]
+                    reshaped_step = hidden_state.reshape(n_audio, self.n_group, *hidden_state.shape[0:])
+                    reshaped_step_hidden_states.append(reshaped_step)
+                reshaped_hidden_states.append(reshaped_step_hidden_states)
+
+
+
 
 
         # get the final candidates for each group, and slice between the first sampled token and EOT
@@ -777,13 +793,13 @@ class DecodingTask:
             lp / (len(t) + 1) for t, lp in zip(tokens, sum_logprobs)
         ]
 
-        # <<<< EXTRACT SELECTED BEAM'S HIDDEN STATES >>>> #TODO
-        selected_hidden_sequences = []
+        # <<<< EXTRACT SELECTED BEAM'S HIDDEN STATES >>>> #TODO: test with n_audio > 1. With n_audio = 1, selected is always a list with a single element
+        selected_last_hidden_sequences = []
     
         for i, selected_idx in enumerate(selected):
             # Get hidden states for the selected beam across all generation steps
             beam_hidden_sequence = []
-            for step_hidden_states in reshaped_hidden_states:
+            for step_hidden_states in reshaped_final_hidden_states:
                 # Extract hidden states for audio i, beam selected_idx
                 # step_hidden_states shape: [n_audio, n_group, seq_len, hidden_dim]
                 beam_step_hidden = step_hidden_states[i, selected_idx]  # [seq_len, hidden_dim]
@@ -791,7 +807,22 @@ class DecodingTask:
             
             # Now beam_hidden_sequence is a list of [seq_len, hidden_dim] tensors
             # One for each generation step
-            selected_hidden_sequences.append(beam_hidden_sequence)
+            selected_last_hidden_sequences.append(beam_hidden_sequence)
+        
+        selected_hidden_sequences = []
+        for i, selected_idx in enumerate(selected):
+            for step_hidden_states in reshaped_hidden_states:
+                selected_step_hidden_states = []
+                for hidden_state in step_hidden_states:
+                    # Extract hidden states for the audio i, beam selected_idx
+                    # hidden_state shape: [n_audio, n_group, seq_len, hidden_dim]
+                    beam_step_hidden = hidden_state[i, selected_idx]
+                    selected_step_hidden_states.append(beam_step_hidden)
+                selected_hidden_sequences.append(selected_step_hidden_states)
+        # selected_hidden_sequences is a list of lists, where each inner list contains
+        # the hidden states for each generation step for the selected beam
+        wrap_list_selected_hidden_sequences = [selected_hidden_sequences]
+                
 
  
 
@@ -802,7 +833,8 @@ class DecodingTask:
             audio_features,
             avg_logprobs,
             no_speech_probs,
-            selected_hidden_sequences #TODO
+            selected_last_hidden_sequences, #TODO
+            wrap_list_selected_hidden_sequences 
         )
         if len(set(map(len, fields))) != 1:
             raise RuntimeError(f"inconsistent result lengths: {list(map(len, fields))}")
@@ -817,9 +849,10 @@ class DecodingTask:
                 no_speech_prob=no_speech_prob,
                 temperature=self.options.temperature,
                 compression_ratio=compression_ratio(text),
-                last_hidden_state=selected_hidden_sequences, #TODO
+                last_hidden_states=selected_hidden_sequences, #TODO
+                hidden_states=wrap_list_selected_hidden_sequences, #TODO
             )
-            for text, language, tokens, features, avg_logprob, no_speech_prob, selected_hidden_sequences in zip(
+            for text, language, tokens, features, avg_logprob, no_speech_prob, selected_hidden_sequences, wrap_list_selected_hidden_sequences in zip(
                 *fields
             )
         ]
