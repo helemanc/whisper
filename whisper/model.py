@@ -238,15 +238,22 @@ class TextDecoder(nn.Module):
         )
         x = x.to(xa.dtype)
 
+        hidden_states = []
         for block in self.blocks:
             x = block(x, xa, mask=self.mask, kv_cache=kv_cache)
+            hidden_states.append(x)
+
+        # Convert list to tensor: shape will be (num_layers, batch_size, seq_len, hidden_dim)
+        hidden_states_tensor = torch.stack(hidden_states)
+        # Reshape to (num_layers, seq_len, num_layers, hidden_dim) as batch_size will alwsays be 1
+        hidden_states_tensor = hidden_states_tensor.squeeze(1)
 
         x = self.ln(x)
         logits = (
             x @ torch.transpose(self.token_embedding.weight.to(x.dtype), 0, 1)
         ).float()
 
-        return logits, x 
+        return logits, x, hidden_states_tensor
 
 
 class Whisper(nn.Module):
